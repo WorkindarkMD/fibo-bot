@@ -1,0 +1,174 @@
+//@version=5
+indicator("Regime-Adaptive Quantum Oscillator", shorttitle="QA-Scalper", overlay=false)
+
+// =============================================================================
+//                           MODULE 1: MARKET REGIME FILTER
+// =============================================================================
+// This module determines the current state of the market (regime) based on
+// trend strength (ADX) and volatility (ATR).
+
+// -----------------------------------------------------------------------------
+//                                  INPUTS
+// -----------------------------------------------------------------------------
+regime_group = "Market Regime Filter"
+adx_len = input.int(14, "ADX Length", group=regime_group)
+atr_len = input.int(14, "ATR Length", group=regime_group)
+adx_threshold = input.float(23.0, "ADX Trend Threshold", group=regime_group, tooltip="ADX level above which the market is considered to be trending.")
+vol_threshold_pct = input.float(0.05, "Volatility Threshold (%)", group=regime_group, tooltip="Normalized ATR percentage. If volatility is above this value, the market is considered volatile.")
+
+// -----------------------------------------------------------------------------
+//                                CALCULATIONS
+// -----------------------------------------------------------------------------
+// Trend Strength and Direction
+[dmi_plus, dmi_minus, adx] = ta.dmi(adx_len, adx_len)
+
+// Volatility
+normalized_atr = (ta.atr(atr_len) / close) * 100 // Volatility as a percentage of price
+
+// Regime Conditions
+is_trending = adx > adx_threshold
+is_volatile = normalized_atr > vol_threshold_pct
+is_bullish_trend = is_trending and dmi_plus > dmi_minus
+is_bearish_trend = is_trending and dmi_minus > dmi_plus
+is_volatile_range = not is_trending and is_volatile
+is_quiet_range = not is_trending and not is_volatile
+
+// Determine Regime Name and Color
+var string regime_name = na
+var color regime_color = na
+
+if is_bullish_trend
+    regime_name := "Bull Trend"
+    regime_color := color.new(color.green, 40)
+else if is_bearish_trend
+    regime_name := "Bear Trend"
+    regime_color := color.new(color.red, 40)
+else if is_volatile_range
+    regime_name := "Volatile Range"
+    regime_color := color.new(color.orange, 40)
+else if is_quiet_range
+    regime_name := "Quiet Range"
+    regime_color := color.new(color.gray, 40)
+else
+    regime_name := "Undefined"
+    regime_color := color.new(color.black, 40)
+
+// -----------------------------------------------------------------------------
+//                                  VISUALIZATION
+// -----------------------------------------------------------------------------
+// Display a label with the current market regime.
+// This label is updated on every bar.
+var label regime_label = label.new(
+     bar_index, high,
+     text="Undefined",
+     xloc=xloc.bar_index,
+     yloc=yloc.price,
+     color=color.new(color.white, 100),
+     textcolor=color.white,
+     style=label.style_label_down,
+     textalign=text.align_center
+)
+
+if barstate.islast
+    label.set_xy(regime_label, bar_index, ta.highest(high, 20) * 1.01)
+    label.set_text(regime_label, "Regime: " + regime_name)
+    label.set_color(regime_label, regime_color)
+    label.set_textcolor(regime_label, color.white)
+
+
+// =============================================================================
+//                           MODULE 2: QUANTUM OSCILLATOR
+// =============================================================================
+// This module calculates a custom, weighted oscillator based on Momentum,
+// Money Flow Index (MFI), and Relative Strength Index (RSI).
+
+// -----------------------------------------------------------------------------
+//                                  INPUTS
+// -----------------------------------------------------------------------------
+osc_group = "Quantum Oscillator"
+rsi_len = input.int(14, "RSI Length", group=osc_group)
+mfi_len = input.int(14, "MFI Length", group=osc_group)
+mom_len = input.int(10, "Momentum Length", group=osc_group)
+norm_len = input.int(50, "Normalization Lookback", group=osc_group, tooltip="Period to normalize the Momentum indicator over.")
+
+w_rsi = input.float(0.4, "RSI Weight", group=osc_group, step=0.1)
+w_mfi = input.float(0.4, "MFI Weight", group=osc_group, step=0.1)
+w_mom = input.float(0.2, "Momentum Weight", group=osc_group, step=0.1)
+
+// -----------------------------------------------------------------------------
+//                                CALCULATIONS
+// -----------------------------------------------------------------------------
+// Calculate base indicators
+rsi_val = ta.rsi(close, rsi_len)
+mfi_val = ta.mfi(high, low, close, volume, mfi_len)
+mom_val = ta.mom(close, mom_len)
+
+// Normalize Momentum to a 0-100 scale
+mom_lowest = ta.lowest(mom_val, norm_len)
+mom_highest = ta.highest(mom_val, norm_len)
+range = mom_highest - mom_lowest
+norm_mom = (mom_val - mom_lowest) / (range == 0 ? 1 : range) * 100 // Avoid division by zero
+
+// Calculate the weighted average for the Quantum Oscillator
+total_weight = w_rsi + w_mfi + w_mom
+quantum_osc = (rsi_val * w_rsi + mfi_val * w_mfi + (na(norm_mom) ? 50 : norm_mom) * w_mom) / (total_weight == 0 ? 1 : total_weight)
+
+// -----------------------------------------------------------------------------
+//                                  VISUALIZATION
+// -----------------------------------------------------------------------------
+plot(quantum_osc, "Quantum Oscillator", color=color.new(color.aqua, 0), linewidth=2)
+hline(80, "Overbought", color=color.new(color.red, 20), linewidth=1)
+hline(50, "Midline", color=color.new(color.gray, 50), linestyle=hline.style_dashed, linewidth=1)
+hline(20, "Oversold", color=color.new(color.green, 20), linewidth=1)
+
+
+// =============================================================================
+//                           MODULE 3: ADAPTIVE SIGNAL LOGIC
+// =============================================================================
+// This module generates trade signals based on the market regime detected by
+// Module 1 and the oscillator value from Module 2.
+
+// -----------------------------------------------------------------------------
+//                                  INPUTS
+// -----------------------------------------------------------------------------
+signal_group = "Signal Logic"
+// Trend-following logic inputs
+trend_long_entry = input.float(55.0, "Trend Long Entry Level", group=signal_group, tooltip="Crossover this level to confirm a long entry in a bull trend.")
+trend_short_entry = input.float(45.0, "Trend Short Entry Level", group=signal_group, tooltip="Crossunder this level to confirm a short entry in a bear trend.")
+// Mean-reversion (ranging) logic inputs
+range_long_entry = input.float(20.0, "Range Long Entry Level", group=signal_group, tooltip="Crossover this oversold level to confirm a long entry in a volatile range.")
+range_short_entry = input.float(80.0, "Range Short Entry Level", group=signal_group, tooltip="Crossunder this overbought level to confirm a short entry in a volatile range.")
+
+
+// -----------------------------------------------------------------------------
+//                                  SIGNAL LOGIC
+// -----------------------------------------------------------------------------
+// --- Trend-Following Signals ---
+long_trend_signal = ta.crossover(quantum_osc, trend_long_entry)
+short_trend_signal = ta.crossunder(quantum_osc, trend_short_entry)
+
+// --- Mean-Reversion Signals ---
+long_range_signal = ta.crossover(quantum_osc, range_long_entry)
+short_range_signal = ta.crossunder(quantum_osc, range_short_entry)
+
+// --- Combine signals based on regime ---
+long_signal = (is_bullish_trend and long_trend_signal) or (is_volatile_range and long_range_signal)
+short_signal = (is_bearish_trend and short_trend_signal) or (is_volatile_range and short_range_signal)
+
+
+// -----------------------------------------------------------------------------
+//                                  VISUALIZATION
+// -----------------------------------------------------------------------------
+// Plot arrows on the chart for signals
+plotshape(long_signal, "Long Signal", shape.triangleup, location.belowbar, color.new(color.green, 0), size=size.small)
+plotshape(short_signal, "Short Signal", shape.triangledown, location.abovebar, color.new(color.red, 0), size=size.small)
+
+// =============================================================================
+//                                  MODULE 4: ALERTS
+// =============================================================================
+alert_group = "Alerts"
+enable_alerts = input.bool(true, "Enable Alerts", group=alert_group)
+
+if enable_alerts
+    alertcondition(long_signal, title="Quantum Scalper LONG", message="QA-Scalper: New LONG signal for {{ticker}}")
+    alertcondition(short_signal, title="Quantum Scalper SHORT", message="QA-Scalper: New SHORT signal for {{ticker}}")
