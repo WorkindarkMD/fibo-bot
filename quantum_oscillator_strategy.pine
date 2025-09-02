@@ -1,0 +1,388 @@
+//@version=5
+strategy("Квантовый Осциллятор - Автостратегия", shorttitle="КО-Авто", overlay=true,
+         default_qty_type=strategy.percent_of_equity, default_qty_value=10,
+         initial_capital=10000, currency=currency.USD, commission_type=strategy.commission.percent,
+         commission_value=0.1, slippage=2)
+
+// =============================================================================
+//                           МОДУЛЬ 1: ФИЛЬТР РЫНОЧНЫХ РЕЖИМОВ
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//                                  НАСТРОЙКИ
+// -----------------------------------------------------------------------------
+regime_group = "🎯 Фильтр Рыночных Режимов"
+adx_len = input.int(14, "Длина ADX", group=regime_group)
+atr_len = input.int(14, "Длина ATR", group=regime_group)
+adx_threshold = input.float(23.0, "Порог трендовости ADX", group=regime_group)
+vol_threshold_pct = input.float(0.05, "Порог волатильности (%)", group=regime_group)
+
+// -----------------------------------------------------------------------------
+//                                ВЫЧИСЛЕНИЯ
+// -----------------------------------------------------------------------------
+// Сила и направление тренда
+[dmi_plus, dmi_minus, adx] = ta.dmi(adx_len, adx_len)
+
+// Волатильность
+normalized_atr = (ta.atr(atr_len) / close) * 100
+
+// Условия режимов
+is_trending = adx > adx_threshold
+is_volatile = normalized_atr > vol_threshold_pct
+is_bullish_trend = is_trending and dmi_plus > dmi_minus
+is_bearish_trend = is_trending and dmi_minus > dmi_plus
+is_volatile_range = not is_trending and is_volatile
+is_quiet_range = not is_trending and not is_volatile
+
+// Определение названия и цвета режима
+var string regime_name = na
+var color regime_color = na
+
+if is_bullish_trend
+    regime_name := "Бычий Тренд"
+    regime_color := color.new(color.green, 70)
+else if is_bearish_trend
+    regime_name := "Медвежий Тренд"
+    regime_color := color.new(color.red, 70)
+else if is_volatile_range
+    regime_name := "Волатильный Флет"
+    regime_color := color.new(color.orange, 70)
+else if is_quiet_range
+    regime_name := "Тихий Флет"
+    regime_color := color.new(color.gray, 70)
+else
+    regime_name := "Неопределено"
+    regime_color := color.new(color.black, 70)
+
+// Фон режима
+bgcolor(regime_color)
+
+// =============================================================================
+//                           МОДУЛЬ 2: КВАНТОВЫЙ ОСЦИЛЛЯТОР
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//                                  НАСТРОЙКИ
+// -----------------------------------------------------------------------------
+osc_group = "⚡ Квантовый Осциллятор"
+rsi_len = input.int(14, "Длина RSI", group=osc_group)
+mfi_len = input.int(14, "Длина MFI", group=osc_group)
+mom_len = input.int(10, "Длина Momentum", group=osc_group)
+norm_len = input.int(50, "Период нормализации", group=osc_group)
+
+w_rsi = input.float(0.4, "Вес RSI", group=osc_group, step=0.1)
+w_mfi = input.float(0.4, "Вес MFI", group=osc_group, step=0.1)
+w_mom = input.float(0.2, "Вес Momentum", group=osc_group, step=0.1)
+
+// -----------------------------------------------------------------------------
+//                                ВЫЧИСЛЕНИЯ
+// -----------------------------------------------------------------------------
+// Базовые индикаторы
+rsi_val = ta.rsi(close, rsi_len)
+mfi_val = ta.mfi(hlc3, mfi_len)
+mom_val = ta.mom(close, mom_len)
+
+// Нормализация Momentum к шкале 0-100
+mom_lowest = ta.lowest(mom_val, norm_len)
+mom_highest = ta.highest(mom_val, norm_len)
+mom_range = mom_highest - mom_lowest
+norm_mom_val = (mom_val - mom_lowest) / (mom_range == 0 ? 1 : mom_range) * 100
+
+// Вычисление взвешенного среднего для Квантового Осциллятора
+total_weight = w_rsi + w_mfi + w_mom
+rsi_component = rsi_val * w_rsi
+mfi_component = mfi_val * w_mfi
+mom_component = (na(norm_mom_val) ? 50 : norm_mom_val) * w_mom
+quantum_osc = (rsi_component + mfi_component + mom_component) / (total_weight == 0 ? 1 : total_weight)
+
+// =============================================================================
+//                           МОДУЛЬ 3: АДАПТИВНАЯ ЛОГИКА СИГНАЛОВ
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+//                                  НАСТРОЙКИ
+// -----------------------------------------------------------------------------
+signal_group = "📈 Логика Сигналов"
+// Настройки трендовой логики
+trend_long_entry = input.float(55.0, "Уровень входа в лонг (тренд)", group=signal_group,
+                              tooltip="Пересечение этого уровня вверх подтверждает вход в лонг при бычьем тренде")
+trend_short_entry = input.float(45.0, "Уровень входа в шорт (тренд)", group=signal_group,
+                               tooltip="Пересечение этого уровня вниз подтверждает вход в шорт при медвежьем тренде")
+// Настройки логики возврата к среднему (флет)
+range_long_entry = input.float(20.0, "Уровень входа в лонг (флет)", group=signal_group,
+                              tooltip="Пересечение этого перепроданного уровня вверх подтверждает вход в лонг во флете")
+range_short_entry = input.float(80.0, "Уровень входа в шорт (флет)", group=signal_group,
+                               tooltip="Пересечение этого перекупленного уровня вниз подтверждает вход в шорт во флете")
+
+// -----------------------------------------------------------------------------
+//                                  ЛОГИКА СИГНАЛОВ
+// -----------------------------------------------------------------------------
+// Трендовые сигналы
+long_trend_signal = ta.crossover(quantum_osc, trend_long_entry)
+short_trend_signal = ta.crossunder(quantum_osc, trend_short_entry)
+
+// Сигналы возврата к среднему
+long_range_signal = ta.crossover(quantum_osc, range_long_entry)
+short_range_signal = ta.crossunder(quantum_osc, range_short_entry)
+
+// Объединение сигналов на основе режима
+long_signal = (is_bullish_trend and long_trend_signal) or (is_volatile_range and long_range_signal)
+short_signal = (is_bearish_trend and short_trend_signal) or (is_volatile_range and short_range_signal)
+
+// =============================================================================
+//                           МОДУЛЬ 4: УПРАВЛЕНИЕ РИСКАМИ
+// =============================================================================
+
+risk_group = "🛡️ Управление Рисками"
+use_sl = input.bool(true, "Использовать Стоп-Лосс", group=risk_group)
+sl_pct = input.float(2.0, "Стоп-Лосс (%)", group=risk_group, step=0.1, minval=0.1, maxval=10)
+use_tp = input.bool(true, "Использовать Тейк-Профит", group=risk_group)
+tp_pct = input.float(4.0, "Тейк-Профит (%)", group=risk_group, step=0.1, minval=0.1, maxval=20)
+
+// =============================================================================
+//                           МОДУЛЬ 5: АВТОТОРГОВЛЯ
+// =============================================================================
+
+auto_group = "🤖 Автоторговля"
+enable_auto = input.bool(true, "Включить автоторговлю", group=auto_group)
+position_size = input.float(10, "Размер позиции (% от депозита)", group=auto_group, step=1, minval=1, maxval=100)
+
+// Вычисление уровней стоп-лосс и тейк-профит
+long_sl = use_sl ? close * (1 - sl_pct / 100) : na
+long_tp = use_tp ? close * (1 + tp_pct / 100) : na
+short_sl = use_sl ? close * (1 + sl_pct / 100) : na
+short_tp = use_tp ? close * (1 - tp_pct / 100) : na
+
+// Исполнение ордеров
+if enable_auto and long_signal
+    strategy.entry("ЛОНГ", strategy.long, qty=position_size, comment="🚀 Лонг")
+    if use_sl
+        strategy.exit("SL_ЛОНГ", "ЛОНГ", stop=long_sl, comment="❌ СЛ Лонг")
+    if use_tp
+        strategy.exit("TP_ЛОНГ", "ЛОНГ", limit=long_tp, comment="✅ ТП Лонг")
+
+if enable_auto and short_signal
+    strategy.entry("ШОРТ", strategy.short, qty=position_size, comment="📉 Шорт")
+    if use_sl
+        strategy.exit("SL_ШОРТ", "ШОРТ", stop=short_sl, comment="❌ СЛ Шорт")
+    if use_tp
+        strategy.exit("TP_ШОРТ", "ШОРТ", limit=short_tp, comment="✅ ТП Шорт")
+
+// =============================================================================
+//                           МОДУЛЬ 6: ВИЗУАЛИЗАЦИЯ
+// =============================================================================
+
+vis_group = "🎨 Визуализация"
+show_signals = input.bool(true, "Показать сигналы на графике", group=vis_group)
+show_regime_label = input.bool(true, "Показать метку режима", group=vis_group)
+show_osc = input.bool(false, "Показать осциллятор", group=vis_group)
+show_entries = input.bool(true, "Показать входы в позицию", group=vis_group)
+show_exits = input.bool(true, "Показать выходы из позицией", group=vis_group)
+show_sl_tp_lines = input.bool(true, "Показать линии СЛ/ТП", group=vis_group)
+
+// Сигналы на графике
+plotshape(long_signal and show_signals, "📈 Лонг Сигнал", shape.triangleup, location.belowbar,  color.new(color.lime, 0), size=size.small, text="📈")
+plotshape(short_signal and show_signals, "📉 Шорт Сигнал", shape.triangledown, location.abovebar,
+          color.new(color.red, 0), size=size.small, text="📉")
+
+// Входы в позицию (когда стратегия фактически открывает сделку)
+long_entry_condition = strategy.position_size > strategy.position_size[1]
+short_entry_condition = strategy.position_size < strategy.position_size[1]
+
+plotshape(long_entry_condition and show_entries, "🚀 ВХОД ЛОНГ", shape.circle, location.belowbar,
+          color.new(color.green, 0), size=size.normal, text="ВХОД\nЛОНГ")
+plotshape(short_entry_condition and show_entries, "🔥 ВХОД ШОРТ", shape.circle, location.abovebar,
+          color.new(color.red, 0), size=size.normal, text="ВХОД\nШОРТ")
+
+// Выходы из позиции
+var bool was_long = false
+var bool was_short = false
+var float entry_price = na
+
+// Отслеживание состояния позиции
+if strategy.position_size > 0
+    was_long := true
+    was_short := false
+    if na(entry_price) or strategy.position_size > strategy.position_size[1]
+        entry_price := close
+else if strategy.position_size < 0
+    was_short := true
+    was_long := false
+    if na(entry_price) or strategy.position_size < strategy.position_size[1]
+        entry_price := close
+else
+    if was_long and show_exits
+        profit = close - entry_price
+        profit_pct = (profit / entry_price) * 100
+        exit_color = profit > 0 ? color.new(color.green, 0) : color.new(color.red, 0)
+        profit_text = profit > 0 ? "+" + str.tostring(profit_pct, "#.#") + "%" : str.tostring(profit_pct, "#.#") + "%"
+        exit_text = "ВЫХОД\n" + profit_text
+        label.new(bar_index, high, text=exit_text, color=exit_color, textcolor=color.white, style=label.style_xcross, size=size.normal)
+
+    if was_short and show_exits
+        profit = entry_price - close
+        profit_pct = (profit / entry_price) * 100
+        exit_color = profit > 0 ? color.new(color.green, 0) : color.new(color.red, 0)
+        profit_text = profit > 0 ? "+" + str.tostring(profit_pct, "#.#") + "%" : str.tostring(profit_pct, "#.#") + "%"
+        exit_text = "ВЫХОД\n" + profit_text
+        label.new(bar_index, low, text=exit_text, color=exit_color, textcolor=color.white, style=label.style_xcross, size=size.normal)
+
+    was_long := false
+    was_short := false
+    entry_price := na
+
+// Линии стоп-лосс и тейк-профит
+var line sl_line = na
+var line tp_line = na
+
+if show_sl_tp_lines and strategy.position_size != 0
+    // Удаляем старые линии
+    if not na(sl_line)
+        line.delete(sl_line)
+    if not na(tp_line)
+        line.delete(tp_line)
+
+    if strategy.position_size > 0 // Лонг позиция
+        if use_sl
+            sl_level = strategy.position_avg_price * (1 - sl_pct / 100)
+            sl_line := line.new(bar_index, sl_level, bar_index + 10, sl_level,
+                               color=color.new(color.red, 0), width=2, style=line.style_dashed)
+            sl_label_text = "🛑 SL: " + str.tostring(sl_level, "#.##")
+            label.new(bar_index + 5, sl_level, sl_label_text,
+                     color=color.new(color.red, 80), textcolor=color.white, size=size.small)
+
+        if use_tp
+            tp_level = strategy.position_avg_price * (1 + tp_pct / 100)
+            tp_line := line.new(bar_index, tp_level, bar_index + 10, tp_level,
+                               color=color.new(color.green, 0), width=2, style=line.style_dashed)
+            tp_label_text = "🎯 TP: " + str.tostring(tp_level, "#.##")
+            label.new(bar_index + 5, tp_level, tp_label_text,
+                     color=color.new(color.green, 80), textcolor=color.white, size=size.small)
+
+    else if strategy.position_size < 0 // Шорт позиция
+        if use_sl
+            sl_level = strategy.position_avg_price * (1 + sl_pct / 100)
+            sl_line := line.new(bar_index, sl_level, bar_index + 10, sl_level,
+                               color=color.new(color.red, 0), width=2, style=line.style_dashed)
+            sl_label_text = "🛑 SL: " + str.tostring(sl_level, "#.##")
+            label.new(bar_index + 5, sl_level, sl_label_text,
+                     color=color.new(color.red, 80), textcolor=color.white, size=size.small)
+
+        if use_tp
+            tp_level = strategy.position_avg_price * (1 - tp_pct / 100)
+            tp_line := line.new(bar_index, tp_level, bar_index + 10, tp_level,
+                               color=color.new(color.green, 0), width=2, style=line.style_dashed)
+            tp_label_text = "🎯 TP: " + str.tostring(tp_level, "#.##")
+            label.new(bar_index + 5, tp_level, tp_label_text,
+                     color=color.new(color.green, 80), textcolor=color.white, size=size.small)
+
+// Метка режима
+highest_high = ta.highest(high, 20)
+var label regime_label = label.new(bar_index, high, text="Неопределено", xloc=xloc.bar_index,
+                                  yloc=yloc.price, color=color.new(color.white, 100),
+                                  textcolor=color.white, style=label.style_label_down,
+                                  textalign=text.align_center, size=size.large)
+
+if show_regime_label and barstate.islast
+    regime_text = "📊 " + regime_name
+    label.set_xy(regime_label, bar_index, highest_high * 1.02)
+    label.set_text(regime_label, regime_text)
+    label.set_color(regime_label, regime_color)
+    label.set_textcolor(regime_label, color.white)
+
+// Осциллятор (опционально)
+osc_display_value = show_osc ? quantum_osc : na
+osc_plot = plot(osc_display_value, "Квантовый Осциллятор", color=color.new(color.aqua, show_osc ? 0 : 100), linewidth=2, display=display.pane)
+
+hline(80, "Перекуплено", color=show_osc ? color.new(color.red, 50) : na, linewidth=1)
+hline(50, "Средняя линия", color=show_osc ? color.new(color.gray, 50) : na, linestyle=hline.style_dashed, linewidth=1)
+hline(20, "Перепродано", color=show_osc ? color.new(color.green, 50) : na, linewidth=1)
+
+// Информационная таблица
+if barstate.islast
+    var table info_table = table.new(position.top_right, 3, 10, bgcolor=color.new(color.black, 80),
+                                     border_width=1, border_color=color.gray)
+
+    table.cell(info_table, 0, 0, "📊 КВАНТОВЫЙ ОСЦИЛЛЯТОР", text_color=color.white,
+               text_size=size.normal, bgcolor=color.new(color.blue, 50))
+    table.cell(info_table, 1, 0, "", text_color=color.white,
+               text_size=size.normal, bgcolor=color.new(color.blue, 50))
+    table.cell(info_table, 2, 0, "", text_color=color.white,
+               text_size=size.normal, bgcolor=color.new(color.blue, 50))
+
+    table.cell(info_table, 0, 1, "Режим:", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 1, regime_name, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 2, 1, "", text_color=color.white, text_size=size.small)
+
+    // Текущая позиция
+    position_text = strategy.position_size > 0 ? "🚀 ЛОНГ" : strategy.position_size < 0 ? "📉 ШОРТ" : "💤 НЕТ"
+    position_color = strategy.position_size > 0 ? color.green : strategy.position_size < 0 ? color.red : color.gray
+    table.cell(info_table, 0, 2, "Позиция:", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 2, position_text, text_color=position_color, text_size=size.small)
+    table.cell(info_table, 2, 2, "", text_color=color.white, text_size=size.small)
+
+    // PnL текущей позиции
+    if strategy.position_size != 0
+        current_pnl = strategy.openprofit
+        current_pnl_pct = (current_pnl / strategy.initial_capital) * 100
+        pnl_color = current_pnl > 0 ? color.green : color.red
+        pnl_prefix = current_pnl > 0 ? "+" : ""
+        pnl_text = pnl_prefix + str.tostring(current_pnl_pct, "#.##") + "%"
+        table.cell(info_table, 0, 3, "PnL позиции:", text_color=color.white, text_size=size.small)
+        table.cell(info_table, 1, 3, pnl_text, text_color=pnl_color, text_size=size.small)
+        table.cell(info_table, 2, 3, "", text_color=color.white, text_size=size.small)
+    else
+        table.cell(info_table, 0, 3, "PnL позиции:", text_color=color.white, text_size=size.small)
+        table.cell(info_table, 1, 3, "0.00%", text_color=color.gray, text_size=size.small)
+        table.cell(info_table, 2, 3, "", text_color=color.white, text_size=size.small)
+
+    table.cell(info_table, 0, 4, "Осциллятор:", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 4, str.tostring(quantum_osc, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(info_table, 2, 4, "", text_color=color.white, text_size=size.small)
+
+    table.cell(info_table, 0, 5, "ADX:", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 5, str.tostring(adx, "#.##"), text_color=color.white, text_size=size.small)
+    table.cell(info_table, 2, 5, "", text_color=color.white, text_size=size.small)
+
+    table.cell(info_table, 0, 6, "Волатильность:", text_color=color.white, text_size=size.small)
+    vol_text = str.tostring(normalized_atr, "#.##") + "%"
+    table.cell(info_table, 1, 6, vol_text, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 2, 6, "", text_color=color.white, text_size=size.small)
+
+    // Статистика стратегии
+    profit_pct = (strategy.netprofit / strategy.initial_capital) * 100
+    profit_color = profit_pct > 0 ? color.green : color.red
+
+    table.cell(info_table, 0, 7, "💰 Общая прибыль:", text_color=color.white, text_size=size.small)
+    total_profit_text = str.tostring(profit_pct, "#.##") + "%"
+    table.cell(info_table, 1, 7, total_profit_text, text_color=profit_color, text_size=size.small)
+    table.cell(info_table, 2, 7, "", text_color=color.white, text_size=size.small)
+
+    table.cell(info_table, 0, 8, "📊 Сделки:", text_color=color.white, text_size=size.small)
+    table.cell(info_table, 1, 8, str.tostring(strategy.closedtrades), text_color=color.white, text_size=size.small)
+    table.cell(info_table, 2, 8, "", text_color=color.white, text_size=size.small)
+
+    win_rate = strategy.closedtrades > 0 ? (strategy.wintrades / strategy.closedtrades) * 100 : 0
+    table.cell(info_table, 0, 9, "🎯 Винрейт:", text_color=color.white, text_size=size.small)
+    win_rate_text = str.tostring(win_rate, "#.##") + "%"
+    table.cell(info_table, 1, 9, win_rate_text, text_color=color.white, text_size=size.small)
+    table.cell(info_table, 2, 9, "", text_color=color.white, text_size=size.small)
+
+// =============================================================================
+//                           МОДУЛЬ 7: АЛЕРТЫ
+// =============================================================================
+
+alert_group = "🔔 Алерты"
+enable_alerts = input.bool(true, "Включить алерты", group=alert_group)
+
+// Алерты должны быть в глобальной области
+string long_alert_msg = "КО-Авто: Новый сигнал ЛОНГ для {{ticker}} | Осциллятор: {{plot('Квантовый Осциллятор')}}"
+string short_alert_msg = "КО-Авто: Новый сигнал ШОРТ для {{ticker}} | Осциллятор: {{plot('Квантовый Осциллятор')}}"
+string regime_alert_msg = "КО-Авто: Смена режима для {{ticker}}"
+
+alertcondition(long_signal and enable_alerts, title="🚀 Квантовый ЛОНГ", message=long_alert_msg)
+alertcondition(short_signal and enable_alerts, title="📉 Квантовый ШОРТ", message=short_alert_msg)
+
+// Дополнительные алерты для смены режима
+bool regime_changed = regime_name != regime_name[1]
+alertcondition(regime_changed and enable_alerts, title="🔄 Смена Режима", message=regime_alert_msg)
