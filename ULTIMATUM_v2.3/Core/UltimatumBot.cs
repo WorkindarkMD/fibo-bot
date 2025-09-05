@@ -1,8 +1,9 @@
 using System;
 using cAlgo.API;
 using Ultimatum.Utils;
-
 using Ultimatum.Core.Configuration;
+using Ultimatum.Engines;
+using Ultimatum.Services;
 
 namespace Ultimatum.Core
 {
@@ -55,20 +56,59 @@ namespace Ultimatum.Core
 
         #endregion
 
+        #region Services and Engines
+
+        private ICTEngine _ictEngine;
+        private MarketStateEngine _marketStateEngine;
+        private RiskManager _riskManager;
+        private TradeManager _tradeManager;
+
+        #endregion
+
         protected override void OnStart()
         {
             Logger.Initialize(this);
-            Logger.Info("Bot starting...");
+            Logger.Info("--- Bot Starting ---");
+
+            // Initialize services and engines
+            _ictEngine = new ICTEngine(this);
+            _marketStateEngine = new MarketStateEngine(this);
+            _riskManager = new RiskManager(this);
+            _tradeManager = new TradeManager(this, $"ULTIMATUM_v2.3_{MagicNumber}");
+
+            Logger.Info("All services and engines initialized successfully.");
         }
 
         protected override void OnTick()
         {
-            // Main trading logic will be executed on each tick
+            // This is the main trading loop. It will become more complex.
+            // For now, this just demonstrates the intended flow of data and decisions.
+
+            // 1. Update the market state using the Wyckoff engine
+            _marketStateEngine.UpdateState();
+
+            // 2. Look for high-probability trading signals using the ICT engine
+            var ictPattern = _ictEngine.FindLastPattern();
+
+            // 3. If a signal is found, proceed to evaluation
+            if (ictPattern != null)
+            {
+                Logger.Info($"ICT Pattern found: {ictPattern.PatternType} ({ictPattern.Direction}) at {ictPattern.PriceLevel}");
+
+                // 4. If trading is enabled, calculate risk and potentially execute a trade
+                if (EnableTrading)
+                {
+                    // This is example logic. A real trade would require more checks (e.g., from ML engine, news filter).
+                    // double stopLossPips = 20; // Example SL
+                    // double volume = _riskManager.CalculateVolumeInLots(stopLossPips, RiskPercent);
+                    // _tradeManager.ExecuteMarketOrder(ictPattern.Direction, volume, stopLossPips, takeProfitPips: 40);
+                }
+            }
         }
 
         protected override void OnStop()
         {
-            Logger.Info("Bot stopped.");
+            Logger.Info("--- Bot Stopped ---");
         }
     }
 }
