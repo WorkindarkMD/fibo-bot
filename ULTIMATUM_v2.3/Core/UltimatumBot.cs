@@ -64,6 +64,7 @@ namespace Ultimatum.Core
         private RiskManager _riskManager;
         private TradeManager _tradeManager;
         private MLEngine _mlEngine;
+        private ClusterEngine _clusterEngine;
 
         #endregion
 
@@ -77,10 +78,15 @@ namespace Ultimatum.Core
             _riskManager = new RiskManager(this);
             _tradeManager = new TradeManager(this, $"ULTIMATUM_v2.3_{MagicNumber}");
             _mlEngine = new MLEngine(this);
+            _clusterEngine = new ClusterEngine(this);
 
             if (EnableML)
             {
                 _mlEngine.TrainModel(new List<double[]>(), new int[0]);
+            }
+            if (EnableClusterAnalysis)
+            {
+                _clusterEngine.UpdateModel(new List<double[]>());
             }
 
             Logger.Info("All services and engines initialized successfully.");
@@ -88,17 +94,23 @@ namespace Ultimatum.Core
 
         protected override void OnTick()
         {
-            // 1. Update the market state using the Wyckoff engine
+            // 1. Analyze Market Regime
+            if (EnableClusterAnalysis && _clusterEngine.IsModelReady)
+            {
+                _clusterEngine.AnalyzeCurrentRegime();
+            }
+
+            // 2. Update the market state using the Wyckoff engine
             _marketStateEngine.UpdateState();
 
-            // 2. Look for high-probability trading signals using the ICT engine
+            // 3. Look for high-probability trading signals using the ICT engine
             var ictPattern = _ictEngine.FindLastPattern();
 
-            // 3. Get ML Prediction if enabled
+            // 4. Get ML Prediction if enabled
             if (EnableML && _mlEngine.IsTrained)
             {
                 int barIndex = Bars.Count - 2;
-                if (barIndex < 0) return; // Not enough bars yet
+                if (barIndex < 0) return;
 
                 var features = _mlEngine.GenerateFeatures(barIndex);
                 var prediction = _mlEngine.Predict(features);
@@ -109,14 +121,14 @@ namespace Ultimatum.Core
                 }
             }
 
-            // 4. If a signal is found, proceed to evaluation
+            // 5. If a signal is found, proceed to evaluation
             if (ictPattern != null)
             {
                 Logger.Info($"ICT Pattern found: {ictPattern.PatternType} ({ictPattern.Direction}) at {ictPattern.PriceLevel}");
 
                 if (EnableTrading)
                 {
-                    // TODO: Combine ICT signal with ML prediction for a final decision.
+                    // TODO: Combine ICT signal, ML prediction, and Market Regime for a final decision.
                 }
             }
         }
