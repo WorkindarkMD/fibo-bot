@@ -4,6 +4,7 @@ using Ultimatum.Utils;
 using Ultimatum.Core.Configuration;
 using Ultimatum.Engines;
 using Ultimatum.Services;
+using System.Collections.Generic;
 
 namespace Ultimatum.Core
 {
@@ -62,6 +63,7 @@ namespace Ultimatum.Core
         private MarketStateEngine _marketStateEngine;
         private RiskManager _riskManager;
         private TradeManager _tradeManager;
+        private MLEngine _mlEngine;
 
         #endregion
 
@@ -70,38 +72,51 @@ namespace Ultimatum.Core
             Logger.Initialize(this);
             Logger.Info("--- Bot Starting ---");
 
-            // Initialize services and engines
             _ictEngine = new ICTEngine(this);
             _marketStateEngine = new MarketStateEngine(this);
             _riskManager = new RiskManager(this);
             _tradeManager = new TradeManager(this, $"ULTIMATUM_v2.3_{MagicNumber}");
+            _mlEngine = new MLEngine(this);
+
+            if (EnableML)
+            {
+                _mlEngine.TrainModel(new List<double[]>(), new int[0]);
+            }
 
             Logger.Info("All services and engines initialized successfully.");
         }
 
         protected override void OnTick()
         {
-            // This is the main trading loop. It will become more complex.
-            // For now, this just demonstrates the intended flow of data and decisions.
-
             // 1. Update the market state using the Wyckoff engine
             _marketStateEngine.UpdateState();
 
             // 2. Look for high-probability trading signals using the ICT engine
             var ictPattern = _ictEngine.FindLastPattern();
 
-            // 3. If a signal is found, proceed to evaluation
+            // 3. Get ML Prediction if enabled
+            if (EnableML && _mlEngine.IsTrained)
+            {
+                int barIndex = Bars.Count - 2;
+                if (barIndex < 0) return; // Not enough bars yet
+
+                var features = _mlEngine.GenerateFeatures(barIndex);
+                var prediction = _mlEngine.Predict(features);
+
+                if (prediction.HasPrediction && prediction.Confidence > MLConfidenceThreshold)
+                {
+                    Logger.Info($"ML Prediction: {prediction.Direction} with {prediction.Confidence:P1} confidence.");
+                }
+            }
+
+            // 4. If a signal is found, proceed to evaluation
             if (ictPattern != null)
             {
                 Logger.Info($"ICT Pattern found: {ictPattern.PatternType} ({ictPattern.Direction}) at {ictPattern.PriceLevel}");
 
-                // 4. If trading is enabled, calculate risk and potentially execute a trade
                 if (EnableTrading)
                 {
-                    // This is example logic. A real trade would require more checks (e.g., from ML engine, news filter).
-                    // double stopLossPips = 20; // Example SL
-                    // double volume = _riskManager.CalculateVolumeInLots(stopLossPips, RiskPercent);
-                    // _tradeManager.ExecuteMarketOrder(ictPattern.Direction, volume, stopLossPips, takeProfitPips: 40);
+                    // TODO: Combine ICT signal with ML prediction for a final decision.
                 }
             }
         }
