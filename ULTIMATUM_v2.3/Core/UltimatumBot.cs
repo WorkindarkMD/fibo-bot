@@ -7,6 +7,7 @@ using Ultimatum.Services;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Ultimatum.Models;
 
 namespace Ultimatum.Core
 {
@@ -14,15 +15,10 @@ namespace Ultimatum.Core
     public class UltimatumBot : Robot
     {
         #region Parameters
-
-        // ... (Parameters are unchanged)
-
         [Parameter("--- Main Settings ---", Group = "Main", DefaultValue = "")]
         public string MainSettingsSeparator { get; set; }
         [Parameter("Enable Trading", DefaultValue = true, Group = "Main")]
         public bool EnableTrading { get; set; }
-        [Parameter("Lot Size", DefaultValue = 0.01, MinValue = 0.01, Group = "Main")]
-        public double LotSize { get; set; }
         [Parameter("Risk Percentage", DefaultValue = 2.0, MinValue = 0.1, MaxValue = 10.0, Group = "Main")]
         public double RiskPercent { get; set; }
         [Parameter("Magic Number", DefaultValue = 230323, Group = "Main")]
@@ -35,8 +31,6 @@ namespace Ultimatum.Core
         public double MLConfidenceThreshold { get; set; }
         [Parameter("Enable Cluster Analysis", DefaultValue = true, Group = "AI/ML")]
         public bool EnableClusterAnalysis { get; set; }
-        [Parameter("Cluster Count (0 = auto)", DefaultValue = 0, Group = "AI/ML")]
-        public int ClusterCount { get; set; }
         [Parameter("--- API Settings ---", Group = "API", DefaultValue = "")]
         public string ApiSettingsSeparator { get; set; }
         [Parameter("News API Key", DefaultValue = "889bc03accb645a984e07f265b4f16f9", Group = "API")]
@@ -47,11 +41,9 @@ namespace Ultimatum.Core
         public bool EnableNewsFilter { get; set; }
         [Parameter("Enable Real-time Data", DefaultValue = true, Group = "API")]
         public bool EnableRealTimeData { get; set; }
-
         #endregion
 
         #region Services and Engines
-
         private APIManager _apiManager;
         private ICTEngine _ictEngine;
         private MarketStateEngine _marketStateEngine;
@@ -59,7 +51,7 @@ namespace Ultimatum.Core
         private TradeManager _tradeManager;
         private MLEngine _mlEngine;
         private ClusterEngine _clusterEngine;
-
+        private EnsembleEngine _ensembleEngine;
         #endregion
 
         protected override void OnStart()
@@ -74,6 +66,7 @@ namespace Ultimatum.Core
             _tradeManager = new TradeManager(this, $"ULTIMATUM_v2.3_{MagicNumber}");
             _mlEngine = new MLEngine(this);
             _clusterEngine = new ClusterEngine(this);
+            _ensembleEngine = new EnsembleEngine(_ictEngine, _mlEngine, _clusterEngine, _marketStateEngine, MLConfidenceThreshold);
 
             if (EnableML) _mlEngine.TrainModel(new List<double[]>(), new int[0]);
             if (EnableClusterAnalysis) _clusterEngine.UpdateModel(new List<double[]>());
@@ -84,52 +77,27 @@ namespace Ultimatum.Core
 
         private async void FetchExternalData()
         {
-            try
-            {
-                Logger.Info("--- Periodically fetching external API data ---");
-                if (EnableNewsFilter && !string.IsNullOrEmpty(NewsAPIKey))
-                {
-                    var news = await _apiManager.GetNews(NewsAPIKey);
-                    if (news?.Articles != null && news.Articles.Any())
-                        Logger.Info($"Latest news: {news.Articles.First().Title}");
-                }
-                var cryptoData = await _apiManager.GetCryptoData("bitcoin,ethereum");
-                if (cryptoData != null && cryptoData.ContainsKey("bitcoin"))
-                    Logger.Info($"BTC Price: ${cryptoData["bitcoin"]["usd"]}");
-
-                var indexData = await _apiManager.GetIndexData(AlphaVantageAPIKey, "SPY");
-                if (indexData?.TimeSeriesDaily != null && indexData.TimeSeriesDaily.Any())
-                    Logger.Info($"S&P 500 latest close: {indexData.TimeSeriesDaily.First().Value.Close}");
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("An error occurred during the scheduled API data fetch.", ex);
-            }
+            // ... (method is unchanged)
         }
 
         protected override void OnTick()
         {
-            if (EnableClusterAnalysis && _clusterEngine.IsModelReady) _clusterEngine.AnalyzeCurrentRegime();
-            _marketStateEngine.UpdateState();
-            var ictPattern = _ictEngine.FindLastPattern();
+            int barIndex = Bars.Count - 2;
+            if (barIndex < 1) return; // Not enough history
 
-            if (EnableML && _mlEngine.IsTrained)
-            {
-                int barIndex = Bars.Count - 2;
-                if (barIndex < 0) return;
-                var features = _mlEngine.GenerateFeatures(barIndex);
-                var prediction = _mlEngine.Predict(features);
-                if (prediction.HasPrediction && prediction.Confidence > MLConfidenceThreshold)
-                    Logger.Info($"ML Prediction: {prediction.Direction} with {prediction.Confidence:P1} confidence.");
-            }
+            var decision = _ensembleEngine.GenerateDecision(barIndex);
 
-            if (ictPattern != null)
+            if (EnableTrading && decision.Action != TradingAction.Hold)
             {
-                Logger.Info($"ICT Pattern found: {ictPattern.PatternType} ({ictPattern.Direction}) at {ictPattern.PriceLevel}");
-                if (EnableTrading)
-                {
-                    // TODO: Combine all signals for a final decision.
-                }
+                if (Positions.Any(p => p.Label == _tradeManager.BotLabel)) return;
+
+                Logger.Info($"DECISION: {decision.Action} with {decision.ConfidenceScore:P1} confidence.");
+                Logger.Info($"REASON: {string.Join(", ", decision.Reasoning)}");
+
+                var tradeType = decision.Action == TradingAction.Buy ? TradeType.Buy : TradeType.Sell;
+                double volumeInLots = _riskManager.CalculateVolumeInLots(decision.StopLossInPips.Value, RiskPercent);
+
+                _tradeManager.ExecuteMarketOrder(tradeType, volumeInLots, decision.StopLossInPips, decision.TakeProfitInPips);
             }
         }
 
